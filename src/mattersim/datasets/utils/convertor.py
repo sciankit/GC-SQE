@@ -26,7 +26,7 @@ Supported Properties:
     - "edge_vector"                ## tensor [num_edges,3]
     - "edge_index"                 ## tensor [2,num_edges]
     - "three_body_indices"         ## tensor [num_three_body,2]
-    - "num_three_body"              ## int
+    - "num_three_body"             ## int
     - "num_triple_ij"              ## tensor [num_edges,1]
     - "num_triple_i"               ## tensor [num_atoms,1]
     - "num_triple_s"               ## tensor [1,1]
@@ -179,7 +179,9 @@ class GraphConvertor:
         forces=None,
         stress=None,
         charges=None,
-        fermi=None, 
+        fermi=None,
+        charge_i=None,
+        charge_mask=None,
         pbc=True,
         **kwargs,
     ):
@@ -288,6 +290,10 @@ class GraphConvertor:
                 args["charges"] = torch.FloatTensor([charges])
             if fermi is not None:
                 args["fermi"] = torch.FloatTensor([fermi])
+            if charge_i is not None:
+                args["charge_i"] = torch.FloatTensor(charge_i)
+            if charge_mask is not None:
+                args["charge_mask"] = torch.FloatTensor([charge_mask])
             return Data(**args)
 
         elif self.model_type == "graphormer":

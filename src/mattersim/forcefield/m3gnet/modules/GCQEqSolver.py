@@ -3,7 +3,7 @@ import torch.nn as nn
 import math
 from scipy import constants
 
-class GCQeqSolver(nn.Module):
+class GCQEqSolver(nn.Module):
     def __init__(
         self,
         cell: torch.Tensor,

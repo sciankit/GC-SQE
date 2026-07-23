@@ -17,7 +17,7 @@ from .modules import (  # noqa: F501
 )
 from .scaling import AtomScaling
 
-from .modules.GCQeqSolver import GCQeqSolver
+from .modules.GCQEqSolver import GCQEqSolver
 from .modules.init_elemental_properties import get_sigma
 
 
@@ -186,7 +186,7 @@ class M3Gnet(nn.Module):
             cell_i = cell[i]
             fermi_i = fermi[i]
 
-            gcqeq = GCQeqSolver(cell = cell_i,
+            gcqeq = GCQEqSolver(cell = cell_i,
                                 pos = pos_i,
                                 chi = chi_i,
                                 J = J_i,

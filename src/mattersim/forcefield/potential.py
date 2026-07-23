@@ -66,6 +66,7 @@ class Potential(nn.Module):
         else:
             self.optimizer = optimizer
         if not isinstance(scheduler, str):
+            print("Scheduler is nothing.")
             self.scheduler = scheduler
         elif scheduler == "StepLR":
             step_size = kwargs.get("step_size", 20)
@@ -73,6 +74,7 @@ class Potential(nn.Module):
             self.scheduler = StepLR(
                 self.optimizer, step_size=step_size, gamma=gamma  # noqa: E501
             )
+            print("Scheduler is StepLR")
         elif scheduler == "ReduceLROnPlateau":
             factor = kwargs.get("factor", 0.85)
             patience = kwargs.get("patience", 20)
@@ -82,6 +84,7 @@ class Potential(nn.Module):
                 factor=factor,
                 patience=patience,
             )
+            print("Scheduler is ReduceLROnPlateau")
         elif scheduler == "CosineAnnealing":
             print("THIS IS COSINE")
             T_max = kwargs.get("T_max", 100)     # number of epochs
@@ -91,6 +94,7 @@ class Potential(nn.Module):
                 T_max=T_max,
                 eta_min=eta_min,
             )
+            print("Scheduler is Cosine Annealing")
         else:
             raise NotImplementedError
         torch.backends.cuda.matmul.allow_tf32 = allow_tf32
@@ -203,6 +207,7 @@ class Potential(nn.Module):
         force_loss_ratio: float = 1.0,
         stress_loss_ratio: float = 0.1,
         charge_loss_ratio: float = 1.0,
+        charge_i_loss_ratio: float = 1.0,
         epochs: int = 100,
         early_stop_patience: int = 100,
         metric_name: str = "val_loss",
@@ -292,6 +297,7 @@ class Potential(nn.Module):
                         force_loss_ratio,
                         stress_loss_ratio,
                         charge_loss_ratio, 
+                        charge_i_loss_ratio,
                         wandb,
                         is_distributed,
                         mode="train",
@@ -312,6 +318,7 @@ class Potential(nn.Module):
                     force_loss_ratio,
                     stress_loss_ratio,
                     charge_loss_ratio,
+                    charge_i_loss_ratio,
                     wandb,
                     is_distributed,
                     mode="train",
@@ -329,6 +336,7 @@ class Potential(nn.Module):
                     force_loss_ratio,
                     stress_loss_ratio,
                     charge_loss_ratio,
+                    charge_i_loss_ratio,
                     wandb,
                     is_distributed,
                     mode="val",
@@ -482,10 +490,11 @@ class Potential(nn.Module):
             include_energy,
             include_forces,
             include_stresses,
-            include_charges, 
+            include_charges,
             1.0,
             0.1,
-            1.0, 
+            1.0,
+            0.2, # c_i_mae
             wandb=wandb,
             mode="val",
             **kwargs,
@@ -563,10 +572,11 @@ class Potential(nn.Module):
         include_energy,
         include_forces,
         include_stresses,
-        include_charges, 
+        include_charges,
         loss_f,
         loss_s,
         loss_c,
+        loss_c_i,
         wandb,
         is_distributed=False,
         mode="train",
@@ -579,7 +589,7 @@ class Potential(nn.Module):
         train_f_mae = MeanMetric().to(self.device)
         train_s_mae = MeanMetric().to(self.device)
         train_c_mae = MeanMetric().to(self.device)
-
+        train_c_i_mae = MeanMetric().to(self.device)
         # scaler = torch.cuda.amp.GradScaler()
 
         if mode == "train":
@@ -609,17 +619,18 @@ class Potential(nn.Module):
                         include_charges=include_charges,
                     )
 
-            loss_, e_mae, f_mae, s_mae, c_mae = self.loss_calc(
+            loss_, e_mae, f_mae, s_mae, c_mae, c_i_mae = self.loss_calc(
                 graph_batch,
                 result,
                 loss,
                 include_energy,
                 include_forces,
                 include_stresses,
-                include_charges, 
+                include_charges,
                 loss_f,
                 loss_s,
-                loss_c, 
+                loss_c,
+                loss_c_i,
             )
 
             # loss backward
@@ -644,6 +655,7 @@ class Potential(nn.Module):
                 train_s_mae.update(s_mae.detach())
             if include_charges: 
                 train_c_mae.update(c_mae.detach()) 
+                train_c_i_mae.update(c_i_mae.detach())
 
         loss_avg_ = loss_avg.compute().item()
         if include_energy:
@@ -660,18 +672,21 @@ class Potential(nn.Module):
             s_mae = 0
         if include_charges:
             c_mae = train_c_mae.compute().item()
+            c_i_mae = train_c_i_mae.compute().item()
         else:
             c_mae = 0
-        if log: 
+            c_i_mae = 0
+        if log:
             logger.info(
-                "%s: Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f, MAE(c): %.4f, Time: %.2fs, lr: %.8f\n"  # noqa: E501
+                "%s: Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f, MAE(c): %.4f, MAE(c_i): %.4f,  Time: %.2fs, lr: %.8f\n"  # noqa: E501
                 % (
                     mode,
                     loss_avg.compute().item(),
                     e_mae,
                     f_mae,
                     s_mae,
-                    c_mae, 
+                    c_mae,
+                    c_i_mae,
                     time.time() - start_time,
                     #self.scheduler.get_last_lr()[0],
                     self.optimizer.param_groups[0]['lr'],
@@ -685,15 +700,16 @@ class Potential(nn.Module):
                     f"{mode}/mae_e": e_mae,
                     f"{mode}/mae_f": f_mae,
                     f"{mode}/mae_s": s_mae,
-                    f"{mode}/mae_c": c_mae, 
+                    f"{mode}/mae_c": c_mae,
+                    f"{mode}/mae_c_i": c_i_mae,
   #                  f"{mode}/lr": self.scheduler.get_last_lr()[0],
                     f"{mode}/lr": self.optimizer.param_groups[0]['lr'],
-                    f"{mode}/mae_tot": e_mae + f_mae + s_mae + c_mae, 
+                    f"{mode}/mae_tot": e_mae + f_mae + s_mae + c_mae + c_i_mae,
                 },
                 step=epoch,
             )
 
-        return (loss_avg_, e_mae, f_mae, s_mae, c_mae) 
+        return (loss_avg_, e_mae, f_mae, s_mae, c_mae, c_i_mae)
 
     def loss_calc(
         self,
@@ -707,11 +723,13 @@ class Potential(nn.Module):
         loss_f=1.0,
         loss_s=0.1,
         loss_c=1.0,
+        loss_c_i = 0.0
     ):
         e_mae = 0.0
         f_mae = 0.0
         s_mae = 0.0
         c_mae = 0.0 
+        c_i_mae = 0.0
         loss_ = torch.tensor(0.0, device=self.device, requires_grad=True)
 
         if self.model_name == "graphormer" or self.model_name == "geomformer":
@@ -727,20 +745,36 @@ class Potential(nn.Module):
                 f_pred = result["forces"]
                 loss_ = loss_ + loss(f_pred, f_gt) * loss_f
                 f_mae = torch.nn.L1Loss()(f_pred, f_gt)
-                # f_mae = torch.mean(torch.abs(f_pred - f_gt)).item()
             if include_stresses:
                 s_gt = graph_batch.stress
                 s_pred = result["stresses"]
                 loss_ = loss_ + loss(s_pred, s_gt) * loss_s
                 s_mae = torch.nn.L1Loss()(s_pred, s_gt)
-                # s_mae = torch.mean(torch.abs((s_pred - s_gt))).item()
             if include_charges:
                 c_gt = graph_batch.charges
                 c_pred = result["charges"]
                 loss_ = loss_ + loss(c_pred, c_gt) * loss_c
                 c_mae = torch.nn.L1Loss()(c_pred, c_gt)
-                # c_mae = torch.mean(torch.abs((c_pred - c_gt))).item()
-        return loss_, e_mae, f_mae, s_mae, c_mae 
+
+                c_i_gt = graph_batch.charge_i
+                c_mask_gt = graph_batch.charge_mask
+                c_i_pred = result["charges_i"]
+                c_i_pred = c_i_pred.squeeze(-1)
+                atom_mask = c_mask_gt[graph_batch.batch]
+                charge_loss = torch.abs(c_i_pred - c_i_gt)
+                masked_charge_loss = charge_loss * atom_mask
+
+                denom= atom_mask.sum()
+                numerator = (charge_loss * atom_mask).sum() 
+
+                if denom > 0:
+                    charge_loss = numerator / denom
+                else:
+                    charge_loss = torch.tensor(0.0, device=self.device)
+
+                loss_ = loss_ + charge_loss * loss_c_i
+                c_i_mae = ( torch.abs(c_i_pred - c_i_gt) * atom_mask).sum() / (atom_mask.sum() + 1e-8)
+        return loss_, e_mae, f_mae, s_mae, c_mae,  c_i_mae
 
     def get_properties(
         self,
@@ -829,9 +863,9 @@ class Potential(nn.Module):
                     "bi, bij -> bj",
                     input["atom_pos"],
                     (torch.eye(3, device=self.device)[None, ...] + strain_augment),
-                )
+                ) 
                 volume = torch.linalg.det(input["cell"])
-            energies, Q_tot, Q_star, chi, J, omega, E_coulomb,sigma_fac = self.model.forward(input, dataset_idx)
+            energies, Q_tot, Q_star, chi, J, omega, E_coulomb, sigma_fac = self.model.forward(input, dataset_idx)
             output["total_energy"] = energies
 
             if include_charges:

@@ -12,8 +12,10 @@ from mattersim.datasets.utils.convertor import GraphConvertor
 def build_dataloader(
     atoms: list[Atoms] = None,
     energies: list[float] = None,
-    charges: list[float] = None, 
-    fermi_values: list[float] = None,  
+    charges: list[float] = None,
+    charge_i: list[np.ndarray] = None,
+    charge_mask: list[np.ndarray] = None,
+    fermi_values: list[float] = None,
     forces: list[np.ndarray] = None,
     stresses: list[np.ndarray] = None,
     cutoff: float = 5.0,
@@ -38,7 +40,9 @@ def build_dataloader(
             - forces : a list of nx3 force matrix (np.ndarray) with unit eV/Å,
                 where n is the number of atom in each structure.
             - stresses : a list of 3x3 stress matrix (np.ndarray) with unit GPa
-        - charges 
+        - charges
+        - charges_i
+        - chareg_mask
         - fermi_values
         - only_inference : if True, energies, forces and stresses will be ignored
         - num_workers : number of workers for dataloader
@@ -71,14 +75,18 @@ def build_dataloader(
         if stresses is None:
             stresses = [None] * length
         if fermi_values is None:
-            fermi_values = [None] * length
-        if charges is None:   ## THIS IS ADDED
-            charges = [None] * length
+            fermi_values = [0.0] * length
+        if charges is None:
+            charges = [0.0] * length
+        if charge_i is None:
+            charge_i = [None] * length
+        if charge_mask is None:
+            charge_mask = [0.0] * length
 
     if model_type == "m3gnet":
         if multiprocessing == 0 and multithreading == 0:
-            for graph, energy, force, stress, charge, fermi in zip(atoms, energies, forces, stresses, charges, fermi_values):
-                graph = convertor.convert(graph.copy(), energy, force, stress, charge, fermi, **kwargs)
+            for graph, energy, force, stress, charge, fermi, charge_i, charge_mask in zip(atoms, energies, forces, stresses, charges, fermi_values, charge_i, charge_mask):
+                graph = convertor.convert(graph.copy(), energy, force, stress, charge, fermi, charge_i, charge_mask,**kwargs)
                 if graph is not None:
                     preprocessed_data.append(graph)
         elif multithreading > 0 and multiprocessing == 0:
