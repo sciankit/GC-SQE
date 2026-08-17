@@ -1354,7 +1354,7 @@ class MatterSimCalculator(Calculator):
     Deep calculator based on ase Calculator
     """
 
-    implemented_properties = ["energy", "free_energy", "forces", "stress"]
+    implemented_properties = ["energy", "free_energy", "forces", "stress", "charges"]
 
     def __init__(
         self,
@@ -1500,7 +1500,7 @@ class MatterSimCalculator(Calculator):
                     energy=result["total_energy"].detach().cpu().numpy()[0],
                     free_energy=result["total_energy"].detach().cpu().numpy()[0],
                     forces=result["forces"].detach().cpu().numpy(),
-                    charges=result["charges_i"].detach().cpu().numpy(),
+                    charges=result["charges_i"].detach().cpu().numpy().reshape(-1),
                 )
             if self.compute_stress:
                 self.results.update(
