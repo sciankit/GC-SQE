@@ -18,7 +18,15 @@ class GCQEqSolver(nn.Module):
         acc_factor: float = 12.0,
         point_charge: bool = False,
         eps: float = 1e-8,
+        groups: torch.Tensor = None,          # mattersim_neutral_water_qeq: group id per atom, -1 = free
+        correction_z: torch.Tensor = None,    # mattersim_neutral_water_qeq: z used by the slab correction
+        sqe_bonds=None,                       # mattersim_sqe: (i, j, electrode_mask) -> bond-charge solve
+        sqe_kappa: torch.Tensor = None,       # mattersim_sqe: bond hardness per bond
     ):
+        self.sqe_bonds = sqe_bonds
+        self.sqe_kappa = sqe_kappa
+        self.groups = groups
+        self.correction_z = correction_z
         self.cell = cell
         self.volume = torch.abs(torch.det(self.cell))          #self.volume = torch.abs(torch.dot(self.cell[0], torch.cross(self.cell[1], self.cell[2])))
         self.pos = pos
@@ -53,7 +61,27 @@ class GCQEqSolver(nn.Module):
     def forward(self):
         A = self._e_total_matrix + torch.diag(self.J)
         RHS = self.chi + self.fermi
-        Q_star = -torch.linalg.solve(A, RHS)
+        if self.sqe_bonds is not None:
+            # mattersim_sqe: split-charge equilibration (see forcefield/m3gnet/sqe.py)
+            from ..sqe import sqe_solve
+            Q_star, _, _, omega = sqe_solve(A, RHS, self.sqe_bonds, self.sqe_kappa)
+            return Q_star, omega
+        if self.groups is not None and bool((self.groups >= 0).any()):
+            # mattersim_neutral_water_qeq: zero net charge per group (water molecule).
+            # KKT system [[A, C^T], [C, 0]] [q; lambda] = [-RHS; 0]
+            gid = self.groups
+            used = torch.unique(gid[gid >= 0])
+            C = (gid.unsqueeze(0) == used.unsqueeze(1)).to(A.dtype)      # (n_groups, N)
+            n, m = A.shape[0], C.shape[0]
+            K = torch.zeros(n + m, n + m, dtype=A.dtype, device=A.device)
+            K[:n, :n] = A
+            K[:n, n:] = C.T
+            K[n:, :n] = C
+            rhs = torch.cat([-RHS, torch.zeros(m, dtype=A.dtype, device=A.device)])
+            sol = torch.linalg.solve(K, rhs)
+            Q_star = sol[:n]
+        else:
+            Q_star = -torch.linalg.solve(A, RHS)
         omega = 0.5 * Q_star @ (A @ Q_star) + RHS @ Q_star
         return Q_star, omega
 
@@ -88,7 +116,8 @@ class GCQEqSolver(nn.Module):
         """
         prefac = (4.0 * math.pi / self.volume)
 
-        z = self.pos[:, 2] # (N,)
+        # mattersim_neutral_water_qeq: molecule-aware / slab-referenced z when given
+        z = self.pos[:, 2] if self.correction_z is None else self.correction_z  # (N,)
         term1 = z.unsqueeze(1) * z.unsqueeze(0) # (N, 1) x (1, N)
     
         z_squared = z**2

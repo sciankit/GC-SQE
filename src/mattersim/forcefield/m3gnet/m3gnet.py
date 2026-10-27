@@ -19,6 +19,9 @@ from .scaling import AtomScaling
 
 from .modules.GCQEqSolver import GCQEqSolver
 from .modules.init_elemental_properties import get_sigma
+from .bounded_heads import head_windows, soft_clamp  # mattersim_bounded_J_sigma
+from .neutral_water import water_groups, correction_z, NEUTRAL_WATER, DIPOLE_Z_MODE  # mattersim_neutral_water_qeq
+from .sqe import BondHardness, enumerate_bonds, cutoff_switch, SQE_ENABLED  # mattersim_sqe
 
 
 @compile_mode("script")
@@ -90,7 +93,15 @@ class M3Gnet(nn.Module):
             "threebody_cutoff": threebody_cutoff,
         }
 
+        self.bond_hardness = BondHardness(max_z)   # mattersim_sqe: trainable kappa table
         self.register_buffer("sigma", get_sigma(self.max_z, device=device))
+        # mattersim_bounded_J_sigma: per-element windows for J and the width factor.
+        # Non-persistent, so checkpoints of the original model load unchanged.
+        J_lo, J_hi, w_lo, w_hi = head_windows(self.max_z, device=device)
+        self.register_buffer("J_lo", J_lo, persistent=False)
+        self.register_buffer("J_hi", J_hi, persistent=False)
+        self.register_buffer("width_lo", w_lo, persistent=False)
+        self.register_buffer("width_hi", w_hi, persistent=False)
 
     def forward(
         self,
@@ -170,6 +181,11 @@ class M3Gnet(nn.Module):
         chi = self.MLP1(aev_with_fermi).view(-1)  # [batch_size*num_atoms]
         J = self.MLP2(aev_with_fermi).view(-1)  # [batch_size*num_atoms]
         sigma_factor = self.MLP4(aev_with_fermi).view(-1)  # [batch_size*num_atoms]
+        # mattersim_bounded_J_sigma: confine J and the width factor to their
+        # per-element windows (see bounded_heads.py); chi stays free
+        J = soft_clamp(J, self.J_lo[atomic_numbers], self.J_hi[atomic_numbers])
+        sigma_factor = soft_clamp(sigma_factor, self.width_lo[atomic_numbers],
+                                  self.width_hi[atomic_numbers])
 
         Q_list = []
         Q_tot_list = []
@@ -186,13 +202,26 @@ class M3Gnet(nn.Module):
             cell_i = cell[i]
             fermi_i = fermi[i]
 
+            # mattersim_neutral_water_qeq: water molecules (O + its nearest H) are neutral
+            # groups; the slab correction sees whole molecules relative to the slab
+            z_i = atomic_numbers[atom_offset:atom_offset + n_atoms]
+            groups_i, owner_i = water_groups(z_i, pos_i, cell_i)
+            sqe_bonds_i, sqe_kappa_i = None, None
+            if SQE_ENABLED:
+                bi, bj, bcls, br, brc, electrode = enumerate_bonds(z_i, pos_i, cell_i)
+                if electrode.any():
+                    sqe_kappa_i = self.bond_hardness(z_i[bi], z_i[bj], bcls) / cutoff_switch(br, brc)
+                    sqe_bonds_i = (bi, bj, electrode)
             gcqeq = GCQEqSolver(cell = cell_i,
                                 pos = pos_i,
                                 chi = chi_i,
                                 J = J_i,
                                 fermi = fermi_i,
                                 sigmas = sigma_i,
-                                point_charge = False)
+                                point_charge = False,
+                                groups = groups_i if (NEUTRAL_WATER and sqe_bonds_i is None) else None,
+                                sqe_bonds = sqe_bonds_i, sqe_kappa = sqe_kappa_i,
+                                correction_z = correction_z(z_i, pos_i, cell_i, owner_i, DIPOLE_Z_MODE))
             
             Q_i, omega_i = gcqeq.forward()
 

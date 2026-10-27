@@ -1,5 +1,8 @@
 <h1>GC-QEq</h1>
 
+> **Branch `sqe`:** this branch adds split-charge equilibration (SQE) for water at an electrode, bounded
+> hardness/width heads, and a slab-referenced dipole correction. What changed and how to switch it: [`SQE.md`](SQE.md).
+
 GC-QEq extends a message-passing interatomic potential with a **grand-canonical charge
 equilibration (GC-QEq) layer**. The model is conditioned on an applied
 electrode potential, which makes it suitable for electrochemical interfaces, charged slabs, and other systems where the number of electrons is set by a reservoir instead of being fixed.

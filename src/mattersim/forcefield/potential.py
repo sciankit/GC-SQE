@@ -26,6 +26,7 @@ from torchmetrics import MeanMetric
 
 from mattersim.datasets.utils.build import build_dataloader
 from mattersim.forcefield.m3gnet.m3gnet import M3Gnet
+from mattersim.forcefield.m3gnet.bounded_heads import charge_windows, charge_window_penalty  # mattersim_bounded_J_sigma
 from mattersim.jit_compile_tools.jit import compile_mode
 from mattersim.utils.download_utils import download_checkpoint
 from mattersim.utils.logger_utils import get_logger
@@ -208,6 +209,7 @@ class Potential(nn.Module):
         stress_loss_ratio: float = 0.1,
         charge_loss_ratio: float = 1.0,
         charge_i_loss_ratio: float = 1.0,
+        charge_window_ratio: float = 1.0,  # mattersim_bounded_J_sigma
         epochs: int = 100,
         early_stop_patience: int = 100,
         metric_name: str = "val_loss",
@@ -244,6 +246,8 @@ class Potential(nn.Module):
             need_to_load_data: whether to load data from disk
 
         """
+        self.charge_window_ratio = charge_window_ratio  # mattersim_bounded_J_sigma
+
         self.idx = ["val_loss", "val_mae_e", "val_mae_f", "val_mae_s", "val_mae_c"].index(
             metric_name
         )
@@ -585,6 +589,7 @@ class Potential(nn.Module):
     ):
         start_time = time.time()
         loss_avg = MeanMetric().to(self.device)
+        self._window_viol = MeanMetric().to(self.device)   # mattersim_bounded_J_sigma
         train_e_mae = MeanMetric().to(self.device)
         train_f_mae = MeanMetric().to(self.device)
         train_s_mae = MeanMetric().to(self.device)
@@ -678,7 +683,7 @@ class Potential(nn.Module):
             c_i_mae = 0
         if log:
             logger.info(
-                "%s: Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f, MAE(c): %.4f, MAE(c_i): %.4f,  Time: %.2fs, lr: %.8f\n"  # noqa: E501
+                "%s: Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f, MAE(c): %.4f, MAE(c_i): %.4f, window_viol(q): %.5f,  Time: %.2fs, lr: %.8f\n"  # noqa: E501
                 % (
                     mode,
                     loss_avg.compute().item(),
@@ -687,6 +692,7 @@ class Potential(nn.Module):
                     s_mae,
                     c_mae,
                     c_i_mae,
+                    (self._window_viol.compute().item() if self._window_viol.update_count > 0 else 0.0),  # mattersim_bounded_J_sigma
                     time.time() - start_time,
                     #self.scheduler.get_last_lr()[0],
                     self.optimizer.param_groups[0]['lr'],
@@ -774,6 +780,18 @@ class Potential(nn.Module):
 
                 loss_ = loss_ + charge_loss * loss_c_i
                 c_i_mae = ( torch.abs(c_i_pred - c_i_gt) * atom_mask).sum() / (atom_mask.sum() + 1e-8)
+
+                # mattersim_bounded_J_sigma: penalise charges outside the
+                # element's DDEC6 window, on every atom of every frame
+                ratio = getattr(self, "charge_window_ratio", 0.0)
+                if ratio > 0:
+                    if not hasattr(self, "_q_lo"):
+                        self._q_lo, self._q_hi = charge_windows(self.model.max_z, device=c_i_pred.device)
+                    z = graph_batch.atom_attr.squeeze(-1).long()
+                    pen, viol = charge_window_penalty(c_i_pred, z, self._q_lo, self._q_hi)
+                    loss_ = loss_ + pen * ratio
+                    if hasattr(self, "_window_viol"):
+                        self._window_viol.update(viol.detach())
         return loss_, e_mae, f_mae, s_mae, c_mae,  c_i_mae
 
     def get_properties(

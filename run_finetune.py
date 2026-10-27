@@ -266,6 +266,8 @@ if __name__ == "__main__":
     parser.add_argument("--stress_loss_ratio", type=float, default=0.1)
     parser.add_argument("--charge_loss_ratio", type=float, default=5.0)
     parser.add_argument("--charge_i_loss_ratio", type=float, default=1.0)
+    parser.add_argument("--charge_window_ratio", type=float, default=1.0,
+                        help="weight of the penalty on charges outside each element's DDEC6 range (bounded_heads.py); 0 switches it off")
     parser.add_argument("--early_stop_patience", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
 
